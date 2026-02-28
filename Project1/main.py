@@ -18,6 +18,7 @@ class Fetch_Data :
         """
         self.data = yf.download(self.tickers, start = self.start_date, end = self.end_date)
         self.data = np.log(self.data)
+        self.data = self.data['Close']
         return self.data
 
 class Select_Pair: 
@@ -62,7 +63,7 @@ class Select_Pair:
             end2 = price2.index[-1]
 
             if start1 != start2 : 
-                    start = np.maximu(start1,start2)
+                    start = np.maximum(start1,start2)
             else : 
                     start = start1
             
@@ -77,10 +78,14 @@ class Select_Pair:
             score, pval, _ = coint(price1, price2)
 
             self.coint_results[(ticker1, ticker2)] = {'score': score, 'pvalue': pval}
-
+        
         df_coint_results = pd.DataFrame(self.coint_results).transpose()
 
         self.most_coint_pair = df_coint_results['score'].idxmin()
+
+        self.data_most_coint = self.data[[self.most_coint_pair[0], self.most_coint_pair[1]]].dropna()
+
+        return self.most_coint_pair, self.data_most_coint
 
 
         
