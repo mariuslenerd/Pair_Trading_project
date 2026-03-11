@@ -196,7 +196,13 @@ class Fetch_wrds:
         # Relabel historical tickers back to canonical ticker (e.g. PCLN -> BKNG)
         data['ticker'] = data['ticker'].map(lambda t: alias_map.get(t, t))
 
-        return data
+        # Pivot to MultiIndex columns: (ticker, bid/ask)
+        data_bid_ask = data.pivot(index='date', columns='ticker', values=['bid', 'ask'])
+
+        # Swap levels so ticker is first, then bid/ask
+        data_bid_ask = data_bid_ask.swaplevel(axis=1).sort_index(axis=1)
+
+        return data_bid_ask
          
 
 class Simple_Pair_Trading : 
@@ -284,14 +290,78 @@ class Simple_Pair_Trading :
         
         return position_A,position_B
 
-        """def pnl_calculations(self,position_A,position_B):
+    def pnl_calculations(self,positions_df,price_df, return_df,spread_df):
+        """
+        Function that calculates the PnL of a strategy based on the positions taken on asset A and on asset B 
+        In order to make it as realistic as possible, I take into account the bid-ask spread (buy at bid, sell at ask)
+        as well as fixed transaction costs as a function of the price 
+        Args : 
+            - positions_df (pd.DataFrame) : df of the positions held over time of the 2 assets selected for pair trading
+            - price_df (pd.DataFrame) : df of the price over time of the 2 assets
+            - returns_df (pd.DataFrame) : df of the returns over time of the 2 assets
+            - spread_df (pd.DataFrame) : df of the spread (extracted from bid-ask) for the 2 assets
+        
+            
+        Returns : 
+            - cum_pnl (pd.DataFrame) : df of the evolution of the cumulative PnL 
+        """
+        lagged_positions = positions_df.shift(1).fillna(0)
+        position_changes = positions_df.diff().fillna(0)
+        raw_pnl = lagged_positions.values*return_df.values
+
+        pnl = raw_pnl.sum(axis = 1)
+
+
+
+
+        transaction_cost_pct = (spread_df/2)/price_df
+        transactions_costs = (transaction_cost_pct*np.abs(position_changes.values)).sum(axis=1)
+
+
+        net_pnl = pnl-transactions_costs
+        cum_pnl = net_pnl.cumsum()
+
+        #Wealth Evolution : 
+        
+        # Fixed commission per trade day (scaled to unit notional: divide by notional)
+        trade_days = (position_changes.abs() > 0).any(axis=1).astype(float)
+        fixed_cost_unit = trade_days * (c_fixed / notional)   # in unit-notional terms
+
+        total_cost_unit = ba_cost + fixed_cost_unit
+
+        # ── Net daily PnL ─────────────────────────────────────────────────────
+        net_pnl = gross_pnl - total_cost_unit
+
+        # ── Dollar wealth evolution (self-financing: W0 = 0) ──────────────────
+        # Multiply unit-notional PnL by notional to get dollar PnL
+        wealth_gross = (gross_pnl * notional).cumsum()
+        wealth_net   = (net_pnl   * notional).cumsum()
+
+        # ── Sharpe ratio (annualised, assuming 252 trading days) ──────────────
+        # For a self-financing strategy: Sharpe = E[daily PnL] / std[daily PnL] × √252
+        # We use dollar PnL for interpretability
+        daily_dollar_gross = gross_pnl * notional
+        daily_dollar_net   = net_pnl   * notional
+
+        sharpe_gross = (daily_dollar_gross.mean() / daily_dollar_gross.std()) * np.sqrt(252) \
+                       if daily_dollar_gross.std() > 0 else np.nan
+        sharpe_net   = (daily_dollar_net.mean()   / daily_dollar_net.std())   * np.sqrt(252) \
+                       if daily_dollar_net.std()   > 0 else np.nan
+
+        n_trades = int(trade_days.sum())
+
+        return {
+            'gross_pnl_daily' : gross_pnl,
+            'net_pnl_daily'   : net_pnl,
+            'wealth_gross'    : wealth_gross,
+            'wealth_net'      : wealth_net,
+            'sharpe_gross'    : sharpe_gross,
+            'sharpe_net'      : sharpe_net,
+            'total_costs'     : (total_cost_unit * notional).cumsum(),
+            'n_trades'        : n_trades,
+        }
              
-             Function that calculates the PnL of a strategy based on the positions taken on asset A and on asset B 
-             In order to make it as realistic as possible, I take into account the bid-ask spread (buy at bid, sell at ask)
-             as well as fixed transaction costs as a function of the price 
-             """
-             
-    
+        return cum_pnl
             
 
                  
