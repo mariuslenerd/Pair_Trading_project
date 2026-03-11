@@ -13,6 +13,7 @@ def plot_n_series(data,title,yscale,xlabel,ylabel) :
     for col in data.columns : 
         plt.plot(data.index, data[col], label = col)
     plt.legend(title = 'Ticker', loc = 'best')
+    plt.yscale('log')
     plt.grid()
 
     return None
