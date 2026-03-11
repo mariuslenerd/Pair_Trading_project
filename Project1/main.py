@@ -263,13 +263,13 @@ class Simple_Pair_Trading :
                  position_B[i] = position_B[i-1]
             
             if not short_A and not long_A : #we are neither short A nor long A --> we have no position opened
-                if val > self.threshold : #if spread above threshold : open position short_A, long_B
+                if val >= self.threshold : #if spread above threshold : open position short_A, long_B
                     position_A[i] = -1
                     position_B[i] = self.beta
 
                     short_A = True
                     long_B = True
-                if val < -self.threshold : #if spread below threshold : open position long_A, short_B
+                if val <= -self.threshold : #if spread below threshold : open position long_A, short_B
                     position_A[i] = 1
                     position_B[i] = -self.beta
 
@@ -281,7 +281,7 @@ class Simple_Pair_Trading :
 
                 short_A = False
                 long_B = False
-            elif long_A and val > 0 : 
+            elif long_A and val >= 0 : 
                 position_A[i] = 0
                 position_B[i] = 0
 
@@ -321,47 +321,15 @@ class Simple_Pair_Trading :
         net_pnl = pnl-transactions_costs
         cum_pnl = net_pnl.cumsum()
 
-        #Wealth Evolution : 
+        #Calculating sharpe ratio :
+        #Assumption : Rf = 5% --> daily rf = 0.05/252
+        rf_daily = 0.05/252
+        excess_pnl = net_pnl - rf_daily
+
+        sharpe_ratio = (excess_pnl.mean()/excess_pnl.std())*np.sqrt(252)
         
-        # Fixed commission per trade day (scaled to unit notional: divide by notional)
-        trade_days = (position_changes.abs() > 0).any(axis=1).astype(float)
-        fixed_cost_unit = trade_days * (c_fixed / notional)   # in unit-notional terms
 
-        total_cost_unit = ba_cost + fixed_cost_unit
-
-        # ── Net daily PnL ─────────────────────────────────────────────────────
-        net_pnl = gross_pnl - total_cost_unit
-
-        # ── Dollar wealth evolution (self-financing: W0 = 0) ──────────────────
-        # Multiply unit-notional PnL by notional to get dollar PnL
-        wealth_gross = (gross_pnl * notional).cumsum()
-        wealth_net   = (net_pnl   * notional).cumsum()
-
-        # ── Sharpe ratio (annualised, assuming 252 trading days) ──────────────
-        # For a self-financing strategy: Sharpe = E[daily PnL] / std[daily PnL] × √252
-        # We use dollar PnL for interpretability
-        daily_dollar_gross = gross_pnl * notional
-        daily_dollar_net   = net_pnl   * notional
-
-        sharpe_gross = (daily_dollar_gross.mean() / daily_dollar_gross.std()) * np.sqrt(252) \
-                       if daily_dollar_gross.std() > 0 else np.nan
-        sharpe_net   = (daily_dollar_net.mean()   / daily_dollar_net.std())   * np.sqrt(252) \
-                       if daily_dollar_net.std()   > 0 else np.nan
-
-        n_trades = int(trade_days.sum())
-
-        return {
-            'gross_pnl_daily' : gross_pnl,
-            'net_pnl_daily'   : net_pnl,
-            'wealth_gross'    : wealth_gross,
-            'wealth_net'      : wealth_net,
-            'sharpe_gross'    : sharpe_gross,
-            'sharpe_net'      : sharpe_net,
-            'total_costs'     : (total_cost_unit * notional).cumsum(),
-            'n_trades'        : n_trades,
-        }
-             
-        return cum_pnl
+        return cum_pnl,sharpe_ratio
             
 
                  
