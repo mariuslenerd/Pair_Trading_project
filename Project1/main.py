@@ -8,6 +8,9 @@ import statsmodels.api as sm
 import wrds
 from statsmodels.tsa.stattools import adfuller
 from utils import plot_wealth_positions_spread
+from utils import plot_p_values
+from utils import pnl_calculations
+from statsmodels.tsa.stattools import coint as eg_coint
 
 
 class Fetch_Data :
@@ -303,62 +306,19 @@ class Simple_Pair_Trading :
         self.positions_df  = pd.concat([position_A, position_B], axis=1)
 
       
-        
-        return self.positions_df
-
-    def pnl_calculations(self):
-        """
-        Function that calculates the PnL of a strategy based on the positions taken on asset A and on asset B 
-        In order to make it as realistic as possible, I take into account the bid-ask spread (buy at bid, sell at ask)
-        as well as fixed transaction costs as a function of the price 
-        Args : 
-            - positions_df (pd.DataFrame) : df of the positions held over time of the 2 assets selected for pair trading
-            - price_df (pd.DataFrame) : df of the price over time of the 2 assets
-            - returns_df (pd.DataFrame) : df of the returns over time of the 2 assets
-            - spread_df (pd.DataFrame) : df of the spread (extracted from bid-ask) for the 2 assets
-        
-            
-        Returns : 
-            - cum_pnl (pd.DataFrame) : df of the evolution of the cumulative PnL 
-        """
-        lagged_positions = self.positions_df.shift(1).fillna(0)
-        position_changes = self.positions_df.diff().fillna(0)
-        raw_pnl = lagged_positions.values*self.return_df.values
-
-        pnl = raw_pnl.sum(axis = 1)
-
-
-
-
-        transaction_cost_pct = (self.bid_ask_spread_df/2)/self.price_df
-        transactions_costs = (transaction_cost_pct*np.abs(position_changes.values)).sum(axis=1)
-
-
-        net_pnl = pnl-transactions_costs
-        cum_pnl = net_pnl.cumsum()
-
-        #Calculating sharpe ratio :
-        #Assumption : Rf = 5% --> daily rf = 0.05/252
-        rf_daily = 0.05/252
-        excess_pnl = net_pnl - rf_daily
-
-        sharpe_ratio = (excess_pnl.mean()/excess_pnl.std())*np.sqrt(252)
-        
-
-        return cum_pnl,sharpe_ratio
+        cum_pnl,sharpe = pnl_calculations(self.positions_df,self.price_df,self.returns_df,self.spread, self.bid_ask_spread,self.threshold)
+        return cum_pnl,sharpe
     
 
 class Rolling_Pair_Trading : 
-    def __init__(self, window, coint_window,data_raw, most_coint_pair_df, bid_ask_spread):
+    def __init__(self, window, coint_window,data_raw, most_coint_pair_df, bid_ask_spread,threshold):
           self.window = window
-          self.coint_window = coint_window
           self.data_raw = data_raw
           self.most_coint_pair_df = most_coint_pair_df
           self.bid_ask_spread = bid_ask_spread
           self.price_df = self.data_raw[self.most_coint_pair_df.columns].reindex(self.bid_ask_spread.index)
           self.return_df = self.price_df.pct_change()
-
-
+          self.threshold = threshold
 
     
     def extract_rolling_params(self) : 
@@ -409,7 +369,7 @@ class Rolling_Pair_Trading :
 
         return None
 
-    def simple_rolling_pair_trading(self,threshold) : 
+    def simple_rolling_pair_trading(self) : 
         """
          Fct responsible for the pair trading strategy where parameters are estimated based on a 1y window
          Prevents look ahead bias (when using future data for today's decision)
@@ -420,6 +380,7 @@ class Rolling_Pair_Trading :
          # Rolling trading loop
          # Same logic as simple_pair_trading but with time-varying beta for position sizing and time-varying spread 
          # for entry/exit signals
+
         long_A = False
         short_A = False
 
@@ -434,11 +395,11 @@ class Rolling_Pair_Trading :
                 pos_B[i] = pos_B[i-1]
 
             if not short_A and not long_A:
-                if val >= threshold:            # spread too high : short A, long B
+                if val >= self.threshold:            # spread too high : short A, long B
                     pos_A[i] = -1
                     pos_B[i] =  b
                     short_A = True
-                elif val <= -threshold:         # spread too low : long A, short B
+                elif val <= -self.threshold:         # spread too low : long A, short B
                     pos_A[i] =  1
                     pos_B[i] = -b
                     long_A = True
@@ -453,46 +414,332 @@ class Rolling_Pair_Trading :
         # Build positions DataFrame with datetime index 
         rolling_pos_A = pd.Series(pos_A, index=self.rolling_spread_clean.index, name=self.ticker_A)
         rolling_pos_B = pd.Series(pos_B, index=self.rolling_spread_clean.index, name=self.ticker_B)
-        rolling_positions = pd.concat([rolling_pos_A, rolling_pos_B], axis=1)
+        self.rolling_positions_df = pd.concat([rolling_pos_A, rolling_pos_B], axis=1)
 
         # PnL using the same method as before
-        rolling_price_df   = self.price_df[self.tickers_pair].reindex(self.rolling_spread_clean.index) #re-index the original data to match
-        rolling_returns_df = rolling_price_df.pct_change()
-        rolling_spread_df  = self.bid_ask_spread.reindex(self.rolling_spread_clean.index)
+        self.rolling_price_df   = self.price_df[self.tickers_pair].reindex(self.rolling_spread_clean.index) #re-index the original data to match
+        self.rolling_returns_df = self.rolling_price_df.pct_change()
+        self.rolling_bid_ask_spread_df  = self.bid_ask_spread.reindex(self.rolling_spread_clean.index)
 
-        rolling_simpletrade = Simple_Pair_Trading(
-            self.most_coint_pair_df[self.ticker_A], self.most_coint_pair_df[self.ticker_B],
-            self.rolling_spread_clean, self.alpha, self.rolling_beta_clean.mean(), threshold
-        )
-        rolling_cum_pnl, rolling_sharpe = rolling_simpletrade.pnl_calculations(
-            rolling_positions, rolling_price_df, rolling_returns_df, rolling_spread_df
-        )
+        cum_pnl,sharpe = pnl_calculations(self.rolling_positions_df,self.rolling_price_df,self.rolling_returns_df,self.rolling_spread_clean, self.rolling_bid_ask_spread_df,self.threshold)
 
-        # Plot using previously coded fct 
+        return cum_pnl,sharpe
+
+
+                
+
+class Rolling_Pair_Trading_coint_filter : 
+    """
+        Now, in order to feed even stronger signals to the trading strategy, I will apply another layer 
+        of filtering. There is a new rolling window which is called cointegration window. This window
+        checks the cointegration (based on last 504 days of data) using a Engle Granger test which 
+        tests whether the process has a unit root (non stationary). If the process has a unit root, 
+        then the 2 assets are not cointegrated based on the last 504 observations and therefore,
+        the trading process is not allowed. if there are positions opened, they are closed and we can repoen 
+        when cointegration is "accepted" again. 
+    """
+    def __init__(self,significance_level,window,coint_window,data_raw, most_coint_pair_df, bid_ask_spread,threshold):
+        self.significance_level = significance_level
+        self.window = window # 1-year window for alpha/beta/spread (in order to adapt faster to regime changes)
+        self.coint_window = coint_window # 2-year window for cointegration test (longer sample = more test power = fewer false "not cointegrated" rejections)
+        self.data_raw = data_raw
+        self.most_coint_pair_df = most_coint_pair_df
+        self.bid_ask_spread = bid_ask_spread
+        self.price_df = self.data_raw[self.most_coint_pair_df.columns].reindex(self.bid_ask_spread.index)
+        self.return_df = self.price_df.pct_change()
+        self.threshold = threshold  
+
+    def extract_cointegration_filter_params(self) : 
+        """
+        This function is responsible for extracting the parameters (spread,beta,cointegration pvalue)
+        on each rolling window. 
+
+        The rolling window for extracting the alpha, beta and the spread (residuals of the regression) 
+        is based on the last 252 observations. The cointegration window for extracting the p-values 
+        is based on 504 observations for stronger estimations .
+        """      
+        self.tickers_pair = list(self.most_coint_pair_df.columns) #fetch tickers from the most cointegrated pair
+        self.ticker_A, self.ticker_B = self.tickers_pair[0], self.tickers_pair[1] 
+        n = len(self.most_coint_pair_df) #nb of rows 
+
+        # Now we create empty series for storing rolling spread, betas and cointegration p-values
+        self.rolling_spread = pd.Series(np.nan, index=self.most_coint_pair_df.index)
+        self.rolling_beta   = pd.Series(np.nan, index=self.most_coint_pair_df.index)
+        rolling_coint_pval = pd.Series(np.nan, index = self.most_coint_pair_df.index)
+
+
+        # Start at window_coint (the larger window) so both sub-windows always have enough data
+        # We do not trade during the first window : it serves for estimating the params
+        for t in range(self.coint_window, n):
+            coint_data = self.most_coint_pair_df.iloc[t - self.coint_window : t]  # 504-day window for EG test
+            beta_data  = self.most_coint_pair_df.iloc[t - self.window : t]  # 252-day window for OLS
+
+            # 1) Engle-Granger cointegration test on the 504-day window
+            _, pval, _ = eg_coint(coint_data[self.ticker_A], coint_data[self.ticker_B])
+            rolling_coint_pval.iloc[t] = pval
+
+            # 2) estimate alpha, beta, spread on the 252-day window
+            selectpair_cf = Select_Pair(beta_data)
+            alpha_cf, beta_cf, resid_cf = selectpair_cf.extract_ratios_cointegrated_pair(beta_data, self.tickers_pair)
+
+            # Out-of-sample spread for day t (yesterday's model applied to today's price)
+            spread_t = self.most_coint_pair_df[self.ticker_A].iloc[t] - alpha_cf - beta_cf * self.most_coint_pair_df[self.ticker_B].iloc[t]
+            self.rolling_spread.iloc[t] = (spread_t - resid_cf.mean()) / resid_cf.std()
+            self.rolling_beta.iloc[t]   = beta_cf
+
+        # summary 
+        self.rolling_coint_pval_clean = rolling_coint_pval.iloc[self.coint_window:]
+        n_total = len(self.rolling_coint_pval_clean)
+        n_coint = int((self.rolling_coint_pval_clean < self.significance_level).sum())
+        pct     = 100 * n_coint / n_total
+        print(f"Cointegrated windows : {n_coint} / {n_total} ({pct:.1f}%) → trading allowed")
+        print(f"Non-cointegrated     : {n_total - n_coint} ({100 - pct:.1f}%) → forced flat")
+        
+        plot_p_values(rolling_coint_pval,self.significance_level,self.coint_window)
+    def cointegration_filter_pair_trading(self) : 
+        # 
+        long_A  = False
+        short_A = False
+
+        post_warmup_index = self.most_coint_pair_df.index[self.coint_window:] #all rows after the first window which is unsable for trading 
+        #as we need a first estimate cointegration
+        n_trading = len(post_warmup_index)
+
+        pos_A = np.zeros(n_trading)
+        pos_B = np.zeros(n_trading)
+
+        for i, date in enumerate(post_warmup_index):
+
+            # Carry forward previous day's position
+            if i > 0:
+                pos_A[i] = pos_A[i-1]
+                pos_B[i] = pos_B[i-1]
+
+            # Cointegration condition : if p-value >= threshold : not cointegrated --> close positions and positions stay flat
+            if self.rolling_coint_pval_clean.loc[date] >= self.significance_level:
+                if long_A or short_A:           # forced exit when relationship breaks down
+                    pos_A[i] = 0;  pos_B[i] = 0
+                    long_A = False;   short_A = False
+                    continue   # no new signal : go to next timestep
+
+            val = self.rolling_spread.loc[date]
+            b   = self.rolling_beta.loc[date]
+
+            # Standard spread trading conditions (same as previously)
+            if not short_A and not long_A:
+                if val >= self.threshold:            # spread too high --> short A, long B
+                    pos_A[i] = -1 
+                    pos_B[i] =  b  
+                    short_A = True
+                elif val <= -self.threshold:         # spread too low  --> long A, short B
+                    pos_A[i] =  1;  pos_B[i] = -b;  long_A  = True
+                elif short_A and val <= 0:           # mean-reverted --> close
+                    pos_A[i] = 0
+                    pos_B[i] = 0
+                    short_A = False
+                elif long_A  and val >= 0:          # mean-reverted → close
+                    pos_A[i] = 0
+                    pos_B[i] = 0
+                    long_A  = False
+
+        # Positions df
+        pos_A = pd.Series(pos_A, index=post_warmup_index, name=self.ticker_A)
+        pos_B = pd.Series(pos_B, index=post_warmup_index, name=self.ticker_B)
+        self.positions_df = pd.concat([pos_A, pos_B], axis=1)
+
+        # PnL 
+
+        self.price_df   = self.data_raw[self.tickers_pair].reindex(post_warmup_index)
+        self.returns_df = self.cf_price_df.pct_change()
+        self.spread_df  = self.bid_ask_spread.reindex(post_warmup_index)
+
+        cum_pnl,sharpe = pnl_calculations(self.positions_df,self.price_df,self.returns_df,self.spread, self.bid_ask_spread,self.threshold)
+
+        return self.price_df, self.returns_df,self.spread_df
+    
+
+        
+
+# Plot using previously coded fct 
+plot_wealth_positions_spread(data_most_coint_pair.reindex(rolling_spread_cf.index),rolling_spread_cf, threshold, cf_positions, cum_pnl)
+print(f"Sharpe ratio (rolling, annualised): {sharpe_ratio:.4f}")
+        
+  
+
+class Kalman_Pair_Trading:
+    """
+    Pair trading strategy using a Kalman filter to estimate alpha and beta dynamically.
+
+    State-space model
+    -----------------
+    Observation : BKNG_t = alpha_t + beta_t * IHG_t + eps_t,    eps_t ~ N(0, R)
+    Transition  : [alpha_t, beta_t]^T = [alpha_{t-1}, beta_{t-1}]^T + omega_t,  omega_t ~ N(0, Q)
+
+    The state vector theta_t = [alpha_t, beta_t] follows a random walk.
+    At each step the Kalman filter produces a one-step-ahead prediction of BKNG_t.
+    The prediction error (innovation) e_t, normalised by sqrt(S_t), serves directly
+    as the z-score spread signal — no separate normalisation window is needed.
+
+    Hyperparameters
+    ---------------
+    delta : float
+        Process-noise scaling  Q = (delta / (1-delta)) * I.
+        Higher delta → faster adaptation of alpha/beta (but noisier estimates).
+        Typical range: 1e-6 to 1e-3.
+    R_var : float
+        Observation noise variance. Higher R_var → filter trusts the model more
+        than new observations, resulting in slower adaptation.
+    """
+
+    def __init__(self, data_raw, most_coint_pair_df, bid_ask_spread, threshold, delta=1e-5, R_var=1.0):
+        self.data_raw          = data_raw
+        self.most_coint_pair_df = most_coint_pair_df
+        self.bid_ask_spread    = bid_ask_spread
+        self.threshold         = threshold
+        self.delta             = delta
+        self.R_var             = R_var
+
+        self.tickers_pair      = list(most_coint_pair_df.columns)
+        self.ticker_A, self.ticker_B = self.tickers_pair[0], self.tickers_pair[1]
+
+        self.price_df  = data_raw[most_coint_pair_df.columns].reindex(bid_ask_spread.index)
+        self.return_df = self.price_df.pct_change()
+
+    # ──────────────────────────────────────────────────────────────────────────
+    def run_kalman_filter(self, warmup=30):
+        """
+        Run the Kalman filter over the full price history.
+
+        At each time step t:
+          Predict  : P_pred = P + Q
+          Innovate : e_t = BKNG_t - H_t @ theta   (the spread)
+                     S_t = H_t @ P_pred @ H_t + R  (innovation variance)
+          Update   : K = P_pred @ H_t / S_t        (Kalman gain)
+                     theta = theta + K * e_t
+                     P     = (I - K H_t^T) P_pred
+
+        The normalised innovation  z_t = e_t / sqrt(S_t)  is the trading signal.
+
+        Returns
+        -------
+        kf_alpha, kf_beta, kf_spread : pd.Series
+        """
+        prices_A = self.most_coint_pair_df[self.ticker_A].values
+        prices_B = self.most_coint_pair_df[self.ticker_B].values
+        n = len(prices_A)
+
+        Ve = self.delta / (1 - self.delta)
+        Q  = Ve * np.eye(2)   # process noise
+        R  = self.R_var       # observation noise (scalar)
+
+        theta = np.zeros(2)       # [alpha_0, beta_0]
+        P     = np.eye(2) * 1e4  # large initial uncertainty
+
+        alphas  = np.full(n, np.nan)
+        betas   = np.full(n, np.nan)
+        spreads = np.full(n, np.nan)
+
+        for t in range(n):
+            H = np.array([1.0, prices_B[t]])  # observation row: [1, IHG_t]
+            y = prices_A[t]                   # observation: BKNG_t
+
+            # ── Predict ────────────────────────────────────────────────────
+            P_pred = P + Q                    # theta_pred = theta (F = I)
+
+            # ── Innovation ─────────────────────────────────────────────────
+            e = y - float(H @ theta)          # prediction error = raw spread
+            S = float(H @ P_pred @ H) + R     # innovation variance (scalar)
+
+            # ── Update ─────────────────────────────────────────────────────
+            K     = (P_pred @ H) / S          # Kalman gain (2×1 vector)
+            theta = theta + K * e
+            P     = (np.eye(2) - np.outer(K, H)) @ P_pred
+
+            alphas[t] = theta[0]
+            betas[t]  = theta[1]
+            if t >= warmup:
+                spreads[t] = e / np.sqrt(S)   # normalised innovation (z-score)
+
+        idx = self.most_coint_pair_df.index
+        self.kf_alpha  = pd.Series(alphas,  index=idx, name='alpha')
+        self.kf_beta   = pd.Series(betas,   index=idx, name='beta')
+        self.kf_spread = pd.Series(spreads, index=idx, name='spread').dropna()
+
+        return self.kf_alpha, self.kf_beta, self.kf_spread
+
+    # ──────────────────────────────────────────────────────────────────────────
+    def kalman_pair_trading(self):
+        """
+        Entry / exit logic identical to the rolling strategy, using
+        the Kalman-filter spread and time-varying beta for position sizing.
+        """
+        long_A  = False
+        short_A = False
+
+        pos_A = np.zeros(len(self.kf_spread))
+        pos_B = np.zeros(len(self.kf_spread))
+
+        for i, (t, val) in enumerate(self.kf_spread.items()):
+            b = self.kf_beta[t]
+
+            if i > 0:                           # carry forward
+                pos_A[i] = pos_A[i-1]
+                pos_B[i] = pos_B[i-1]
+
+            if not short_A and not long_A:
+                if val >= self.threshold:       # A overpriced → short A, long B
+                    pos_A[i], pos_B[i] = -1,  b
+                    short_A = True
+                elif val <= -self.threshold:    # A underpriced → long A, short B
+                    pos_A[i], pos_B[i] =  1, -b
+                    long_A = True
+            elif short_A and val <= 0:          # mean-reversion: close
+                pos_A[i] = pos_B[i] = 0
+                short_A = False
+            elif long_A and val >= 0:
+                pos_A[i] = pos_B[i] = 0
+                long_A = False
+
+        kf_pos_A = pd.Series(pos_A, index=self.kf_spread.index, name=self.ticker_A)
+        kf_pos_B = pd.Series(pos_B, index=self.kf_spread.index, name=self.ticker_B)
+        self.kf_positions_df = pd.concat([kf_pos_A, kf_pos_B], axis=1)
+
+        self.kf_price_df   = self.price_df[self.tickers_pair].reindex(self.kf_spread.index)
+        self.kf_returns_df = self.kf_price_df.pct_change()
+        self.kf_bid_ask_df = self.bid_ask_spread.reindex(self.kf_spread.index)
+
+    # ──────────────────────────────────────────────────────────────────────────
+    def pnl_calculations(self):
+        """
+        PnL calculation identical to the other strategies, for fair comparison.
+
+        Returns
+        -------
+        cum_pnl      : pd.Series
+        sharpe_ratio : float
+        """
+        lagged_positions = self.kf_positions_df.shift(1).fillna(0)
+        position_changes = self.kf_positions_df.diff().fillna(0)
+
+        raw_pnl = (lagged_positions.values * self.kf_returns_df.values).sum(axis=1)
+
+        transaction_cost_pct = (self.kf_bid_ask_df / 2) / self.kf_price_df
+        transactions_costs   = (transaction_cost_pct * np.abs(position_changes.values)).sum(axis=1)
+
+        net_pnl      = raw_pnl - transactions_costs
+        cum_pnl      = net_pnl.cumsum()
+
+        rf_daily     = 0.05 / 252
+        excess_pnl   = net_pnl - rf_daily
+        sharpe_ratio = (excess_pnl.mean() / excess_pnl.std()) * np.sqrt(252)
+
         plot_wealth_positions_spread(
-            self.most_coint_pair_df.reindex(self.rolling_spread_clean.index),
-            self.rolling_spread_clean, threshold, rolling_positions, rolling_cum_pnl
+            self.most_coint_pair_df.reindex(self.kf_spread.index),
+            self.kf_spread, self.threshold, self.kf_positions_df, cum_pnl
         )
-        print(f"Sharpe ratio (rolling, annualised): {rolling_sharpe:.4f}")
+        print(f"Sharpe ratio (Kalman, annualised): {sharpe_ratio:.4f}")
+        return cum_pnl, sharpe_ratio
 
-            
-                
-
-                    
-                
-            
-
-                    
-
-
-        
-            
-
-
-        
-            
-            
-        
 
 
 
