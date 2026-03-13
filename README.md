@@ -30,6 +30,8 @@ Empirical-Methods-In-Finance/
 - `utils.py`: plotting and shared PnL helpers.
 - `visualization.ipynb`: notebook version used for step-by-step visual checks.
 
+The notebook is only there for visualization and exploratory analysis. It is **not required** to run the project: the full workflow can be executed directly from the terminal through `main.py`.
+
 ## Requirements
 
 Install dependencies from the project root:
