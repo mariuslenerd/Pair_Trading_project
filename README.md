@@ -16,9 +16,9 @@ The script runs a complete pipeline:
 ## Project structure
 
 ```
-Empirical-Methods-In-Finance/
+Pair_Trading_Project/
 ├── README.md
-└── Project1/
+└── Pair_trading_project/
         ├── main.py
         ├── data_and_trading_utils.py
         ├── utils.py
